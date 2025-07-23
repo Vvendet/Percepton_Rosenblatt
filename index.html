@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8" />
+  <title>Perceptron de Rosenblatt Interativo</title>
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      margin: 0; padding: 0;
+      background-color: #f5f7fa;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    h2 {
+      margin-top: 30px;
+    }
+
+    #plot {
+      width: 800px;
+      height: 500px;
+      margin: 20px auto;
+    }
+
+    #controls {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+
+    #sliderContainer {
+      margin-top: 15px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    #equation {
+      margin-top: 10px;
+      font-weight: bold;
+      font-size: 1.1em;
+    }
+
+    input[type="file"],
+    button {
+      margin: 6px 8px;
+      padding: 8px 14px;
+      font-size: 14px;
+      border: none;
+      border-radius: 8px;
+      background-color: #4e73df;
+      color: white;
+      cursor: pointer;
+      transition: background-color 0.25s ease;
+    }
+
+    input[type="file"] {
+      background-color: #36b9cc;
+    }
+
+    button:hover {
+      background-color: #2e59d9;
+    }
+
+    input[type=range] {
+      width: 300px;
+    }
+
+    .hint {
+      font-size: 0.9em;
+      margin-top: 10px;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>Perceptron de Rosenblatt Interativo</h2>
+
+  <div id="plot"></div>
+
+  <div id="controls">
+    <input type="file" id="fileInput" />
+    <button onclick="trainPerceptron()">Treinar Perceptron</button>
+    <button onclick="clearPoints()">Limpar Pontos</button>
+    <button onclick="generatePoints()">Gerar Pontos</button>
+
+    <div id="sliderContainer" style="display:none;">
+      <label><strong>Época:</strong> <span id="epochDisplay">0</span></label>
+      <input type="range" id="epochSlider" min="0" max="0" value="0" />
+      <button id="playPauseBtn">▶️</button>
+    </div>
+
+    <div id="equation">Equação: -</div>
+
+    <p class="hint">
+      🖱 Clique esquerdo adiciona ponto da classe +1 (azul)<br />
+      🖱 Clique direito adiciona ponto da classe -1 (vermelho)<br />
+      ⌨️ Pressione <strong>1</strong> ou <strong>2</strong> com o mouse sobre o gráfico para adicionar pontos via teclado.
+    </p>
+  </div>
+
+  <script>
+    let points = [];
+    let weightsHistory = [];
+    let intervalId = null;
+    let playing = false;
+    let lastMousePos = null;
+
+    let trace1 = { x: [], y: [], mode: 'markers', type: 'scatter', name: 'Classe +1', marker: { color: 'blue' } };
+    let trace2 = { x: [], y: [], mode: 'markers', type: 'scatter', name: 'Classe -1', marker: { color: 'red' } };
+    let decisionLine = { x: [], y: [], mode: 'lines', name: 'Fronteira de decisão', line: { color: 'green' } };
+
+    const plotDiv = document.getElementById('plot');
+
+    Plotly.newPlot(plotDiv, [trace1, trace2], {
+      margin: { t: 20 },
+      xaxis: { range: [-10, 10] },
+      yaxis: { range: [-10, 10] },
+      dragmode: false,
+    });
+
+    plotDiv.oncontextmenu = () => false;
+
+    plotDiv.addEventListener('click', (event) => {
+      const coords = getCoords(event);
+      if (coords) addPoint(coords.x, coords.y, 1);
+    });
+
+    plotDiv.addEventListener('contextmenu', (event) => {
+      const coords = getCoords(event);
+      if (coords) addPoint(coords.x, coords.y, -1);
+      event.preventDefault();
+    });
+
+    plotDiv.addEventListener('mousemove', (event) => {
+      lastMousePos = getCoords(event);
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (!lastMousePos) return;
+      if (event.key === '1') {
+        addPoint(lastMousePos.x, lastMousePos.y, 1);
+      } else if (event.key === '2') {
+        addPoint(lastMousePos.x, lastMousePos.y, -1);
+      }
+    });
+
+    function getCoords(event) {
+      const bb = plotDiv.getBoundingClientRect();
+      const xaxis = plotDiv._fullLayout.xaxis;
+      const yaxis = plotDiv._fullLayout.yaxis;
+      const xVal = xaxis.p2l(event.clientX - bb.left);
+      const yVal = yaxis.p2l(event.clientY - bb.top);
+      return { x: xVal, y: yVal };
+    }
+
+    function addPoint(x, y, label) {
+      points.push({ x, y, label });
+      if (label === 1) {
+        trace1.x.push(x);
+        trace1.y.push(y);
+      } else {
+        trace2.x.push(x);
+        trace2.y.push(y);
+      }
+      Plotly.react('plot', [trace1, trace2, decisionLine]);
+    }
+
+    function clearPoints() {
+      points = [];
+      trace1.x = [];
+      trace1.y = [];
+      trace2.x = [];
+      trace2.y = [];
+      decisionLine.x = [];
+      decisionLine.y = [];
+      weightsHistory = [];
+      document.getElementById('sliderContainer').style.display = 'none';
+      document.getElementById('equation').textContent = 'Equação: -';
+      stopAnimation();
+      Plotly.react('plot', [trace1, trace2, decisionLine]);
+    }
+
+    document.getElementById('fileInput').addEventListener('change', function (evt) {
+      const file = evt.target.files[0];
+      const reader = new FileReader();
+      reader.onload = function (e) {
+        const lines = e.target.result.split('\n');
+        for (const line of lines) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length === 3) {
+            const x = parseFloat(parts[0]);
+            const y = parseFloat(parts[1]);
+            const label = parseInt(parts[2]);
+            if (!isNaN(x) && !isNaN(y) && (label === 1 || label === -1)) {
+              addPoint(x, y, label);
+            }
+          }
+        }
+      };
+      reader.readAsText(file);
+    });
+
+    function trainPerceptron() {
+      let w = [0, 0];
+      let b = 0;
+      const lr = 0.1;
+      const maxEpochs = 100;
+      weightsHistory = [];
+
+      for (let epoch = 0; epoch < maxEpochs; epoch++) {
+        let error = false;
+        for (const pt of points) {
+          const x = [pt.x, pt.y];
+          const activation = w[0] * x[0] + w[1] * x[1] + b;
+          const prediction = activation >= 0 ? 1 : -1;
+          if (prediction !== pt.label) {
+            w[0] += lr * pt.label * x[0];
+            w[1] += lr * pt.label * x[1];
+            b += lr * pt.label;
+            error = true;
+          }
+        }
+        weightsHistory.push([w[0], w[1], b]);
+        if (!error) break;
+      }
+
+      updateSlider(weightsHistory.length);
+      updateDecisionBoundary(0);
+    }
+
+    function updateSlider(maxEpoch) {
+      const slider = document.getElementById('epochSlider');
+      const display = document.getElementById('epochDisplay');
+
+      slider.max = maxEpoch - 1;
+      slider.value = 0;
+      display.textContent = '0';
+      document.getElementById('sliderContainer').style.display = 'flex';
+
+      slider.oninput = function () {
+        const epoch = parseInt(this.value);
+        display.textContent = epoch;
+        updateDecisionBoundary(epoch);
+      };
+
+      document.getElementById('playPauseBtn').onclick = toggleAnimation;
+    }
+
+    function updateDecisionBoundary(epoch) {
+      const [w0, w1, b] = weightsHistory[epoch];
+
+      if (w1 !== 0) {
+        const xVals = [-10, 10];
+        const yVals = xVals.map((x) => -(w0 * x + b) / w1);
+        decisionLine.x = xVals;
+        decisionLine.y = yVals;
+        const a = -(w0 / w1).toFixed(2);
+        const c = -(b / w1).toFixed(2);
+        document.getElementById('equation').textContent = `Equação: y = ${a}x + ${c}`;
+      } else if (w0 !== 0) {
+        const xVal = -(b / w0).toFixed(2);
+        decisionLine.x = [xVal, xVal];
+        decisionLine.y = [-10, 10];
+        document.getElementById('equation').textContent = `Equação: x = ${xVal}`;
+      } else {
+        decisionLine.x = [];
+        decisionLine.y = [];
+        document.getElementById('equation').textContent = 'Equação: Indefinida';
+      }
+
+      Plotly.react('plot', [trace1, trace2, decisionLine]);
+    }
+
+    function toggleAnimation() {
+      if (playing) {
+        stopAnimation();
+      } else {
+        startAnimation();
+      }
+    }
+    let animationFrameId = null;
+    let lastUpdateTime = 0;
+    const animationDelay = 300; // tempo em ms entre atualizações da época
+
+    function startAnimation() {
+    const slider = document.getElementById('epochSlider');
+    const max = parseInt(slider.max);
+    let current = parseInt(slider.value);
+
+    playing = true;
+    document.getElementById('playPauseBtn').textContent = '⏸️';
+    lastUpdateTime = performance.now();
+
+    function animate(time) {
+        if (!playing) return; // para animação
+
+        if (time - lastUpdateTime >= animationDelay) {
+        if (current > max) {
+            stopAnimation();
+            return;
+        }
+        slider.value = current;
+        document.getElementById('epochDisplay').textContent = current;
+        updateDecisionBoundary(current);
+        current++;
+        lastUpdateTime = time;
+        }
+        animationFrameId = requestAnimationFrame(animate);
+    }
+
+    animationFrameId = requestAnimationFrame(animate);
+    }
+
+    function stopAnimation() {
+    playing = false;
+    if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+    }
+    document.getElementById('playPauseBtn').textContent = '▶️';
+    }
+
+    // Função para gerar pontos a partir da reta informada
+    function generatePoints() {
+      const eq = prompt('Digite a equação da reta (ex: y = -2x + 1):');
+      if (!eq) return;
+
+      // Regex para extrair coeficientes a e b
+      const match = eq.match(/y\s*=\s*([-+]?\d*\.?\d*)\s*\*?\s*x\s*([-+]\s*\d+(\.\d+)?)/i);
+      if (!match) {
+        alert('Equação inválida! Use o formato: y = ax + b');
+        return;
+      }
+
+      const a = parseFloat(match[1]);
+      const b = parseFloat(match[2].replace(/\s+/g, ''));
+
+      const nStr = prompt('Quantos pontos deseja gerar?');
+      const n = parseInt(nStr);
+      if (isNaN(n) || n <= 0) {
+        alert('Número inválido!');
+        return;
+      }
+
+      for (let i = 0; i < n; i++) {
+        const x = Math.random() * 16 - 8; // intervalo [-8,8]
+        const y = Math.random() * 16 - 8;
+        const y_line = a * x + b;
+        const label = y > y_line ? 1 : -1;
+        addPoint(x, y, label);
+      }
+
+      alert(`${n} pontos gerados com base na reta y = ${a}x + ${b}`);
+    }
+  </script>
+</body>
+</html>
